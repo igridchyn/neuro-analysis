@@ -1,0 +1,11 @@
+kde_place_field
+compare_firing_rate
+corss_corrs
+reactivation_by_environment
+cofiring_by_environment
+place_field_similarity
+analyze_bayesian_decoding
+population_vector_classifier
+build_population_vector_classifier
+classify_vectors_with_svm
+firing_rate

@@ -1,0 +1,501 @@
+#!/usr/bin/env python
+#TODO: replace pylab hist with numpy hist in compute_hists(), remove smthg causing deprecation warning
+#TODO: fix tsne output problem 
+import sys
+import subprocess
+import multiprocessing
+import numpy as np
+import pandas as pd
+from sklearn.neighbors import KNeighborsRegressor
+import pickle
+import csv
+from matplotlib import pyplot as plt
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+#CONSTANTS:
+
+verbose = True
+tetr = sys.argv[2] #number of tetrode used
+path = sys.argv[1] + '.' #path is everything that goes before 'fet.*'/'clu.*' 
+file_names_prefix = '' #all created files will be named %file_name_prefix_tetr%tetr*
+threshold = 0.4 #treshold for choosing noisy clusters (the smaller number is the more clusters are considered noisy)
+subset_size = 150000 #the subset used for tsne computation will contain approximately %subset_size points 
+					 #(in equal_sampling function clu_len += 100 can be changed for more exact result)
+
+SKIPRUN = len(sys.argv) > 3
+
+computer = 'mec'
+mec_directory = '/home/data/maria' #path to directory with bhtsne folder (all tsne results will be saved in this directory)
+#tSNE parameters:
+perplexity = 100
+theta = 0.5
+it_num = 1000
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+#FUNCTIONS:
+
+#functions for reading text files
+
+def read_text(tetr, path):
+    X = []
+    with open(path + 'fet.' + str(tetr), 'r') as data:
+        for i,line in enumerate(data):
+            if(i>0):
+                if(line.split(" ")[-1] == '\n'):
+                    X.append([int(x) for x in line.split(" ")[:-1]])
+                else:
+                    X.append([int(x) for x in line.split(" ") if (x!='')])
+                if(len(X[-1]) != num_fet):
+                    raise ValueError("Error reading fet file!")
+            else:
+            	num_fet = int(line.split(" ")[0])
+    X = np.asarray(X)
+    Y = pd.read_csv(path + 'clu.' + str(tetr), header = None)
+    Y = Y.values
+    Y = Y.transpose()[0]
+    return X, Y[1:], num_fet
+
+def read_clu(tetr, path):
+    Y = pd.read_csv(path + 'clu.' + str(tetr), header = None)
+    Y = Y.values
+    Y = Y.transpose()[0]
+    return Y[1:]
+
+def read_3dtsne(tetr, path):
+    X = []
+    with open(path + 'extr_3dtsne.' + str(tetr), 'r') as data:
+        for i,line in enumerate(data):
+            if(i>0):
+                if(line.split(" ")[-1] == '\n'):
+                    X.append([int(x) for x in line.split(" ")[:-1]])
+                else:
+                    X.append([int(x) for x in line.split(" ")])
+    X = np.asarray(X)
+    return X
+
+#functions for writing text files
+
+def write_text_with3d(tetr, path):
+    res_n = 0
+    ids = sorted(new_ids_list)
+    num_clu = max(Y)
+    with open(path + 'tsne.' + str(tetr), 'w') as out, open(path + 'tsne_clu.' + str(tetr), 'w') as clu_out:
+        out.write(str(num_fet + 5) + '\n')
+        clu_out.write(str(num_clu) + '\n')
+        for n, line in enumerate(X):
+            str_ = ""
+            for i in range(num_fet - 1):
+                    str_ = str_ + str(X[n,i]) + " "
+            if (len(ids) != 0):
+                if n == ids[0]:
+                    clu_out.write(str(Y[n]) + '\n')
+                    str_ = str_ + str(round(1000*res[res_n,0],0))[:-2] + " " + str(round(1000*res[res_n,1],0))[:-2] + " " 
+                    #str_ = str_ + str(round(1000*res3d[res_n,0],0))[:-2] + " " + str(round(1000*res3d[res_n,1],0))[:-2] + " " + str(round(1000*res3d[res_n,2],0))[:-2] + " "
+                    res_n += 1
+                    ids.pop(0)
+                else:
+                    clu_out.write(str(0)+'\n')
+                    str_ = str_ + '0' + " " + '0' + " " + '0' + " " + '0' + " " + '0' + " "
+                str_ = str_ + str(X[n,-1]) + " "
+            else:
+                clu_out.write(str(0)+'\n')
+                str_ = str_ + '0' + " " + '0' + " " + '0' + " " + '0' + " " + '0' + " "
+                str_ = str_ + str(X[n,-1]) + " "
+            out.write(str_ + '\n')
+
+def add_new_tsne_features(tetr, path):
+    X_3dtsne = read_3dtsne(tetr, path = path)
+    res_n = 0
+    ids = sorted(new_ids_list)
+    num_clu = max(Y)
+    with open(path + 'new_tsne.' + str(tetr), 'w') as out, open(path + 'new_tsne_clu.' + str(tetr), 'w') as clu_out:
+        out.write(str(num_fet + 2) + '\n')
+        clu_out.write(str(max(Y)) + '\n')
+        for n, line in enumerate(X):
+            str_ = ""
+            for i in range(num_fet-1):
+                    str_ = str_ + str(X_3dtsne[n,i]) + " "
+            if (len(ids) != 0):
+                if n == ids[0]:
+                    #clu_out.write(str(Y[n]+num_clu) + '\n')
+                    str_ = str_ + str(round(1000*res[res_n,0],0))[:-2] + " " + str(round(1000*res[res_n,1],0))[:-2] + " " 
+                    #str_ = str_ + str(round(1000*res3d[res_n,0],0))[:-2] + " " + str(round(1000*res3d[res_n,1],0))[:-2] + " " + str(round(1000*res3d[res_n,2],0))[:-2] + " "
+                    res_n += 1
+                    ids.pop(0)
+                else:
+                    #clu_out.write(str(Y[n])+'\n')
+                    str_ = str_ + '0' + " " + '0' + " " #+ '0' + " " + '0' + " " + '0' + " "
+                str_ = str_ + str(X[n,-1]) + " "
+            else:
+                #clu_out.write(str(Y[n])+'\n')
+                str_ = str_ + '0' + " " + '0' + " " # + '0' + " " + '0' + " " + '0' + " "
+                str_ = str_ + str(X_3dtsne[n,-1]) + " "
+            out.write(str_ + '\n')
+            clu_out.write(str(Y[n])+'\n')
+    print(res_n, len(ids))
+
+def write_filtered_clu(tetr, noisy_clusters, path):
+    with open(path + 'flt_clu.' + str(tetr), 'w') as out:
+        out.write(str(max(Y) - len(set(noisy_clusters) - set([1]))) + '\n')
+        zip_ = []
+        zip_.append(1)
+        last_used_num = 2
+        for i in range(2, max(Y)+1):
+            if i in noisy_clusters:
+                zip_.append(1)
+            else:
+                zip_.append(last_used_num)
+                last_used_num += 1
+        for line in Y:
+            out.write(str(zip_[line-1]) + '\n')
+
+
+#functions for reading and writing .tsv files
+
+def write_tsv(X, file_name = 'data.tsv'):
+    with open(file_name, 'w') as tsvfile:
+        writer = csv.writer(tsvfile, delimiter="\t",
+                                quotechar='|', quoting=csv.QUOTE_MINIMAL)
+        for row in X:
+            writer.writerow([str(x) for x in row])
+
+def read_tsv(file_name = 'tSNE_results'):
+    res = []
+    with open(file_name, 'r') as tsvfile:
+        reader = csv.reader(tsvfile, delimiter='\t', quotechar='|')
+        for row in reader:
+            res.append([float(x) for x in row])
+
+    return np.asarray(res)
+
+#functions dealing with correlograms
+
+def corr(X):
+    time_int = 1000
+    corr_data = []
+    times = sorted(X[:,-1])
+    for i in range(len(times)-1):
+        if(i < len(times) - 2):
+            j = i+1
+            while times[j] < (times[i] + time_int):
+                corr_data.append(times[i] - times[j])
+                if(j < len(times) - 2):
+                    j += 1
+                else:
+                    break
+        if(i>0):
+            j = i-1
+            while times[j] > (times[i] - time_int):
+                corr_data.append(times[i] - times[j])
+                if(j>0):
+                    j -= 1
+                else:
+                    break
+    return np.asarray(corr_data)
+
+def clu_quality(hist):
+    time_int = 400
+    indices = np.argwhere(((10 <= hist[1])&(hist[1] < 40))|((-10 > hist[1])&(hist[1] >= -40))).transpose()[0]
+    q1 = np.average(hist[0][indices])
+    indices = np.argwhere(((40 <= hist[1])&(hist[1] < time_int))|((-40 > hist[1])&(hist[1] >= -time_int))).transpose()[0]
+    q2 = np.average(hist[0][indices])
+    if q2 != 0:
+        return q1/q2
+    else:
+        return -1
+
+def compute_hists():
+    hists = []
+    time_int = 400
+    for i in range(1, max(Y)+1):
+        hists.append(plt.hist(corr(X[Y == i]), bins = int(2*time_int/10), range = (-time_int,time_int)))
+    return hists
+
+
+#functions for sampling 
+
+def equal_sampling(subset_size):
+    all_cluster_ids = []
+    for i in range(max([min(Y), 1]), max(Y)+1):
+        all_cluster_ids.append(np.argwhere(Y==i))
+    clu_len = int(subset_size/max(Y))
+    ids = []
+    cluster_ids = []
+    cluster_ids.append([])
+    for i in range(1,len(all_cluster_ids)):
+    	cluster_ids.append((all_cluster_ids[i])[:clu_len])
+    	ids = ids + list((cluster_ids[i].transpose())[0])
+    
+    while(len(ids) < subset_size):
+    	len_ = len(ids)
+    	ids = []
+    	cluster_ids = []
+    	cluster_ids.append([])
+    	clu_len += 100
+    	for i in range(1,len(all_cluster_ids)):
+    		cluster_ids.append((all_cluster_ids[i])[:clu_len])
+    		ids = ids + list((cluster_ids[i].transpose())[0])
+    	if len_ == len(ids):
+       		break;	
+    if (verbose):
+    	print('    max cluster size:', clu_len)
+    	print('    subset size:', len(ids))
+    return sorted(ids)
+
+def random_subset_from_clu(clu, size = 150000):
+    np.random.seed = 42
+    new_ids_list = np.random.permutation(np.argwhere(Y==clu).transpose()[0])[:size]
+    return sorted(new_ids_list)
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+if(verbose):
+	print('Readind fet and clu files...')
+X, Y, num_fet = read_text(tetr, path = path)
+
+if(verbose):
+	print('    Features matrix size: ', X.shape)
+	print('    Answers matrix size: ', Y.shape)
+	print('    Number of KlustaKwik clusters: ', max(Y))
+if(X.shape[0] != Y.shape[0]):
+	raise ValueError("clu and fet files don't match!")
+
+#computing correlograms
+if(verbose):
+	print('Computing correlograms...')
+hists = compute_hists()
+
+#computing clusters quality measures
+if(verbose):
+	print('Computing cluster qualities...')
+clu_qualities = []
+
+for i in range(max(Y)):
+    clu_qualities.append(clu_quality(hists[i])) 
+    
+clu_qualities = np.asarray(clu_qualities)
+
+#selecting noisy clusters
+if(verbose):
+	print('Choosing noisy clusters...')
+noisy_clusters = (np.argwhere(clu_qualities > threshold)+1).transpose()[0]
+if(verbose):
+	print('    Number of noisy clusters:', len(noisy_clusters))
+
+#putting noisy clusters into cluster 0 (modifying .clu-file)
+#the function creates .flt_clu file
+if(verbose):
+	print('Writing modified clu file...')
+write_filtered_clu(tetr = tetr, noisy_clusters = noisy_clusters, path = path)
+clu_name = path+'clu.'+str(tetr)
+new_name = clu_name+'.kkw'
+proc = subprocess.Popen(["mv", clu_name, new_name])
+proc.wait()
+proc_res = proc.communicate()  
+if proc.returncode:
+    print(proc_res[1])
+if proc_res[0] != None:
+	print(proc_res[0])
+#if(verbose):
+	#print("mv", clu_name, new_name)
+new_name = path+'flt_clu.'+str(tetr)
+proc = subprocess.Popen(["mv", new_name, clu_name])
+proc.wait()
+proc_res = proc.communicate()  
+if proc.returncode:
+    print(proc_res[1])
+if proc_res[0] != None:
+	print(proc_res[0])
+#if(verbose):
+	#print("mv", new_name, clu_name)
+Y = read_clu(tetr, path = path)
+if(X.shape[0] != Y.shape[0]):
+	raise ValueError("Modified clu and fet files don't match!")
+
+#Equal sampling from all the clusters (without noise)
+if(verbose):
+	print('Choosing subset for tsne computation...')
+new_ids_list = equal_sampling(subset_size)
+
+#Creating .tsv file for tsne input
+if(verbose):
+	print('Writing input .tsv file for tsne...')
+file_name = file_names_prefix + '_tetr'+str(tetr)+'_kkw'+ '.tsv'
+write_tsv(X[new_ids_list,:num_fet - 6], file_name = file_name)
+
+#Copying input .tsv file to mec to use bh_tsne
+if(verbose):
+	print('Copying input to ' + computer + '...')
+proc = subprocess.Popen(["scp", file_name, "data@"+computer+":" + mec_directory])
+proc.wait()
+proc_res = proc.communicate() 
+if proc.returncode:
+    print(proc_res[1])
+    raise RuntimeError("Copying failed!")
+if proc_res[0] != None:
+	print(proc_res[0])
+
+#Running bh_tsne
+if(verbose):
+	print('Running bh_tsne on ' + computer + '...')
+res_name = 'tSNE_results_'+ file_names_prefix +'_tetr' + str(tetr) + '_kkw'
+
+def run_2dtsne(queue):
+	mec_line = """ "cd """+str(mec_directory)+"""; python bhtsne/bhtsne.py -v -i """ + file_name + """  -o """+ res_name 
+	mec_line += """ -p """+str(perplexity)+""" -d 2 -t """+str(theta)+""" -n """+str(num_fet - 6)+""" -m """+str(it_num)+""" --no_pca" """
+	if(verbose):
+		print('    Starting 2d-tsne computation...')
+	#mec_line = "echo 2d_tsne"
+	proc = subprocess.Popen('ssh data@' + computer + ' -t' + mec_line, shell=True, stdout=subprocess.PIPE)
+	proc.wait() 
+	proc_res = proc.communicate()
+	if proc.returncode:
+		print(proc_res[1])
+		queue.put(-1) 
+	else:
+		if(verbose):
+			print('    2d-tsne computation finished!')
+		queue.put(0)
+	if proc_res[0] != None:
+		print(proc_res[0])
+	
+
+def run_3dtsne(queue):
+	mec_line = """ "cd """+str(mec_directory)+"""; """ + """python bhtsne/bhtsne.py -v -i """ 
+	mec_line += file_name + """  -o """+res_name+"""_3d -p """+str(perplexity)+""" -d 3 -t """+str(theta)+""" -n """+str(num_fet - 6)+""" -m """+str(it_num)+""" --no_pca" """
+	if(verbose):
+		print('    Starting 3d-tsne computation...')
+	#mec_line = "echo 3d_tsne"
+	proc = subprocess.Popen('ssh data@' + computer + ' -t' + mec_line, shell=True, stdout=subprocess.PIPE)
+	proc.wait()
+	proc_res = proc.communicate() 
+	if proc.returncode:
+		print(proc_res[1])
+		queue.put(-1)
+	else:
+		if(verbose):
+			print('    3d-tsne computation finished!')
+		queue.put(0)
+	if proc_res[0] != None:
+		print(proc_res[0])
+	#queue.put(proc.communicate()[0]) 
+
+allProcesses = []
+queue = multiprocessing.Queue()
+
+
+if not SKIPRUN:
+    # 
+    # print('WARNING!!!! SKIP ACTUAL TSNE, WORKAROUND TO FINISH PREVIOUS COMPUTATION')
+    p = multiprocessing.Process(target=run_2dtsne, args=(queue,))
+    allProcesses.append(p)
+    p.start()
+
+    #p = multiprocessing.Process(target=run_3dtsne, args=(queue,))
+    #allProcesses.append(p)
+    #p.start()
+
+    allProcesses[0].join()
+    #allProcesses[1].join()
+
+    if (queue.get() == -1):
+            raise RuntimeError("2d-tsne computation failed!")
+    #if (queue.get() == -1):
+    #	raise RuntimeError("3d-tsne computation failed!")
+
+    #if(verbose):
+            #print('    2d-tsne output:')
+            #for line in queue.get().splitlines():
+            #	print(str(line)+'\n')
+            #print('    3d-tsne output:')
+            #for line in queue.get().splitlines():
+            #	print(str(line)+'\n')
+
+
+if(verbose):
+	print("Copying 2d-tsne output .tsv file from " + computer + "...")
+proc = subprocess.Popen(['scp', 'data@' + computer + ':' + mec_directory + '/' + res_name, "./"])
+proc.wait()
+proc_res = proc.communicate() 
+if proc.returncode:
+    print(proc_res[1])
+    raise RuntimeError("Copying failed!")
+if proc_res[0] != None:
+	print(proc_res[0])
+
+if(verbose):
+	print("Reading 2d-tsne output...")
+res = read_tsv(file_name = res_name)
+
+# 3D
+#if(verbose):
+#	print("Copying 3d-tsne output .tsv file from " + computer + "...")
+#proc = subprocess.Popen('scp data@' + computer + ':' + mec_directory + '/' +  res_name + '_3d ./', shell=True)
+#proc.wait()
+#proc_res = proc.communicate() 
+#if(verbose): 
+#	if proc.returncode:
+#	    print(proc_res[1])
+#	    raise RuntimeError("Copying failed!")
+#	if proc_res[0] != None:
+#		print(proc_res[0])
+
+# if(verbose):
+# 	print("Reading 3d-tsne output...")
+# res3d = read_tsv(file_name = file_name)
+
+if(verbose):
+	print("Starting 2d-tsne extrapolation...")
+kNN_regressor = KNeighborsRegressor(n_neighbors=5, weights='distance', metric='euclidean', n_jobs=-1)
+if(verbose):
+	print('    Fitting...')
+kNN_regressor.fit(X[new_ids_list, :num_fet - 6], res) 
+if(verbose):
+	print('    Predicting...')
+indices = sorted(np.argwhere(Y>1).transpose()[0])
+if(verbose):
+	print('    Number of points (without noise):', len(indices))
+extrapolation_res = kNN_regressor.predict(X[indices, :num_fet - 6])
+
+
+#if(verbose):
+#	print("Starting 3d-tsne extrapolation...")
+#kNN_regressor = KNeighborsRegressor(n_neighbors=5, weights='distance', metric='euclidean', n_jobs=-1)
+#if(verbose):
+#	print('    Fitting...')
+#kNN_regressor.fit(X[new_ids_list, :num_fet - 6], res3d) 
+#if(verbose):
+#	print('    Predicting...')
+#indices = sorted(np.argwhere(Y>1).transpose()[0])
+#if(verbose):
+#	print('    Number of points (without noise):', len(indices))
+#extrapolation_res3d = kNN_regressor.predict(X[indices, :num_fet - 6])
+
+
+if(verbose):
+	print("Creating new .tsne (fet-like) and .tsne_clu (clu-like) files...")
+res = extrapolation_res
+#res3d = extrapolation_res3d
+new_ids_list = indices
+write_text_with3d(tetr, path = path)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
